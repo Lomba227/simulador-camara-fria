@@ -60,6 +60,9 @@ def load_data(f_prod, f_ocup):
 
 prod, ocup = load_data(file_prod, file_ocup)
 
+if "snapshots" not in st.session_state:
+    st.session_state["snapshots"] = {}
+
 # --------------------------------------------------------------------------
 # 2. Preparação: crescimento observado por produto + top N / outros
 # --------------------------------------------------------------------------
@@ -133,28 +136,49 @@ with st.sidebar:
 
     st.button("🔄 Restaurar valores observados (2024→2025)", on_click=_reset_sliders)
 
+    if st.session_state["snapshots"]:
+        st.divider()
+        st.subheader("Anos congelados")
+        for fy in sorted(st.session_state["snapshots"].keys()):
+            c1, c2 = st.columns([3, 1])
+            c1.write(f"✅ {fy}")
+            if c2.button("🗑️", key=f"del_{fy}"):
+                del st.session_state["snapshots"][fy]
+                st.rerun()
+
 # --------------------------------------------------------------------------
 # 4. Projeção de cestos por produto (composto até o ano escolhido)
 # --------------------------------------------------------------------------
+_snaps = st.session_state["snapshots"]
+_anos_antes = [y for y in _snaps if y < ano]
+ano_base = max(_anos_antes) if _anos_antes else None
+snap = _snaps[ano_base] if ano_base else None
+t_rel = ano - (ano_base if ano_base else 2025)
+
+_outros_label = f"Outros ({len(outros)} produtos)"
 rows = []
 for _, row in top.iterrows():
     g = growth_inputs[row["Espécie"]]
-    hastes_proj = row["Qtde Hastes 25"] * (1 + g) ** t * (1 + crescimento_geral) ** t
+    base_h = snap["hastes"].get(row["Espécie"], row["Qtde Hastes 25"]) if snap else row["Qtde Hastes 25"]
+    hastes_proj = base_h * (1 + g) ** t_rel * (1 + crescimento_geral) ** t_rel
     cestos_proj = hastes_proj / row["Cubagem 25 (hastes/vol.)"]
     rows.append({
         "produto": row["Espécie"],
         "cestos_2025": row["Qtde Volumes 25"],
         "crescimento_usado": g,
         "cestos_proj": cestos_proj,
+        "hastes_proj": hastes_proj,
     })
 
-hastes_proj_outros = outros_hastes25 * (1 + outros_growth) ** t * (1 + crescimento_geral) ** t
+base_h_outros = snap["hastes_outros"] if snap else outros_hastes25
+hastes_proj_outros = base_h_outros * (1 + outros_growth) ** t_rel * (1 + crescimento_geral) ** t_rel
 cestos_proj_outros = hastes_proj_outros / outros_cubagem25
 rows.append({
-    "produto": f"Outros ({len(outros)} produtos)",
+    "produto": _outros_label,
     "cestos_2025": outros_cestos25,
     "crescimento_usado": outros_growth,
     "cestos_proj": cestos_proj_outros,
+    "hastes_proj": hastes_proj_outros,
 })
 
 df_result = pd.DataFrame(rows)
@@ -204,6 +228,21 @@ fig.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 st.plotly_chart(fig, use_container_width=True)
+
+# --------------------------------------------------------------------------
+# Congelar simulação
+# --------------------------------------------------------------------------
+base_label = f"{ano_base} (congelado)" if ano_base else "2025 (real)"
+st.info(f"Base desta projeção: **{base_label}** — {t_rel} ano(s) de crescimento aplicados.")
+
+def _congelar():
+    st.session_state["snapshots"][ano] = {
+        "hastes": {r["produto"]: r["hastes_proj"] for r in rows if r["produto"] != _outros_label},
+        "hastes_outros": next(r["hastes_proj"] for r in rows if r["produto"] == _outros_label),
+    }
+
+col_btn, _ = st.columns([2, 3])
+col_btn.button(f"🔒 Congelar simulação {ano}", on_click=_congelar, type="primary")
 
 # --------------------------------------------------------------------------
 # 7. Detalhamento por produto
